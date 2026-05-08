@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import clsx from "clsx";
 import { api, type ComicSummary, type NextComic } from "../lib/api";
+import { useLibraryStore } from "../stores/library";
 import { useSettingsStore } from "../stores/settings";
 import { useToasts } from "../stores/toasts";
 import { useFullscreen } from "../hooks/useFullscreen";
@@ -13,6 +14,8 @@ import { PagedView } from "../components/reader/PagedHorizontal";
 import { ContinuousView } from "../components/reader/Continuous";
 import { WebtoonView } from "../components/reader/Webtoon";
 import { DoublePage, DOUBLE_PAGE_FALLBACK_QUERY } from "../components/reader/DoublePage";
+import { PAGE_ERROR_EVENT } from "../components/reader/ReaderPageImage";
+import { ReaderLoading } from "../components/reader/ReaderLoading";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { QuickSettings } from "../components/reader/QuickSettings";
 import { NextComicPrompt } from "../components/reader/NextComicPrompt";
@@ -50,6 +53,12 @@ export function Reader() {
   const lastSavedZoom = useRef<number | null>(null);
   const autoAdvanceFired = useRef(false);
   const [comic, setComic] = useState<ComicSummary | null>(null);
+  // While the metadata fetch is in flight, show the title from the
+  // library list (if the user came from the grid) so the loading screen
+  // is informative instead of a generic "Cargando…".
+  const comicTitleHint = useLibraryStore((s) =>
+    id ? s.comics.find((c) => c.id === id)?.title ?? null : null,
+  );
   const [page, setPage] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [nextComic, setNextComic] = useState<NextComic | null>(null);
@@ -208,6 +217,42 @@ export function Reader() {
     }, 600);
     return () => window.clearTimeout(t);
   }, [zoom, comic]);
+
+  // Self-heal stale pageCount: if any page image fails to load (404),
+  // the server already kicks off a recount; we just refetch the comic
+  // metadata once (debounced) so the UI clamps to the new last page
+  // instead of leaving the user stuck on a "Página no disponible".
+  useEffect(() => {
+    if (!comic) return;
+    const comicId = comic.id;
+    let timer: number | null = null;
+    let inFlight = false;
+    function onPageError() {
+      if (timer !== null || inFlight) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        inFlight = true;
+        api.comic(comicId)
+          .then((fresh) => {
+            setComic(fresh);
+            if (fresh.pageCount > 0) {
+              setPage((p) => Math.min(p, Math.max(0, fresh.pageCount - 1)));
+            }
+          })
+          .catch(() => {
+            // best-effort — leave the existing comic state in place
+          })
+          .finally(() => {
+            inFlight = false;
+          });
+      }, 600);
+    }
+    window.addEventListener(PAGE_ERROR_EVENT, onPageError as EventListener);
+    return () => {
+      window.removeEventListener(PAGE_ERROR_EVENT, onPageError as EventListener);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [comic]);
 
   // Preload nearby pages (paged modes)
   const preloadUrls = useMemo(() => {
@@ -384,9 +429,7 @@ export function Reader() {
   );
 
   if (!comic) {
-    return (
-      <div className="grid h-full w-full place-items-center bg-black text-ink-400 text-sm">Cargando…</div>
-    );
+    return <ReaderLoading title={comicTitleHint} />;
   }
 
   if (comic.pageCount === 0) {

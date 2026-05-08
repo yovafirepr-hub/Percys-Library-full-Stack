@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { z } from "zod";
 import { prisma } from "../db";
 import { getCover } from "../services/covers";
-import { getPage, getThumb } from "../services/pages";
+import { getPage, getThumb, refreshComicPageCount } from "../services/pages";
 import { evaluateAchievements, recordReadingDay } from "../services/achievements";
 import { asyncHandler } from "../lib/async-handler";
 import { naturalCompare } from "../lib/natural-sort";
@@ -324,7 +324,15 @@ comicsRouter.get(
       quality = s === "high" || s === "balanced" || s === "fast" ? s : "balanced";
     }
     const page = await getPage(req.params.id, n, { autoCrop, quality });
-    if (!page) return res.status(404).end();
+    if (!page) {
+      // The page didn't extract. Most often this is a stale pageCount
+      // in the DB (the extractor over-counted at scan time, or the file
+      // was rewritten with fewer pages). Re-ask the extractor in the
+      // background so the next /comics/:id fetch returns the corrected
+      // count and the client can clamp to a valid page.
+      void refreshComicPageCount(req.params.id).catch(() => {});
+      return res.status(404).end();
+    }
     res.setHeader("Content-Type", page.mime);
     // The crop variant + quality are encoded in the URL query, so the
     // browser cache will naturally key separately for each combination.

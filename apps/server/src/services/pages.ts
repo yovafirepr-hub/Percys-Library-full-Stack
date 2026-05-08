@@ -35,6 +35,35 @@ async function getRawPageBuffer(comic: ResolvedComic, index: number): Promise<Bu
   }
 }
 
+/**
+ * Re-ask the extractor how many pages a comic actually has and update the
+ * stored pageCount if it drifted (e.g. the original metadata was wrong, or
+ * the source file was rewritten with fewer pages). Safe to call from a
+ * fire-and-forget context — it never throws and never returns a value the
+ * caller has to act on.
+ */
+export async function refreshComicPageCount(comicId: string): Promise<void> {
+  const comic = await prisma.comic.findUnique({
+    where: { id: comicId },
+    select: { id: true, path: true, format: true, pageCount: true },
+  });
+  if (!comic) return;
+  const extractor = getExtractor(comic.format as ComicFormat);
+  let actual = 0;
+  try {
+    actual = await extractor.count(comic.path);
+  } catch {
+    try {
+      actual = (await extractor.list(comic.path)).length;
+    } catch {
+      return;
+    }
+  }
+  if (actual <= 0 || actual === comic.pageCount) return;
+  const data: { pageCount: number; currentPage?: number; completed?: boolean } = { pageCount: actual };
+  await prisma.comic.update({ where: { id: comic.id }, data });
+}
+
 export async function getPage(
   comicId: string,
   index: number,

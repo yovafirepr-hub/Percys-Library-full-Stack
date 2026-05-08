@@ -5,36 +5,12 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const root = path.resolve(__dirname, "..");
-const prismaDir = path.resolve(root, "prisma");
 
-function resolveDbPath(): string {
-  const envUrl = process.env.DATABASE_URL ?? "";
-  
-  // If already a valid SQLite file URL with absolute path
-  if (envUrl.startsWith("file:") && !envUrl.includes("./") && !envUrl.includes("../")) {
-    return envUrl;
-  }
-  
-  // Extract file path from "file:./dev.db" or similar
-  let dbFile = "dev.db";
-  if (envUrl.startsWith("file:")) {
-    dbFile = envUrl.slice(5);
-    if (dbFile.startsWith("/") || dbFile.startsWith("\\")) {
-      dbFile = dbFile.slice(1);
-    }
-  } else if (envUrl) {
-    dbFile = envUrl;
-  }
-  
-  // Resolve relative to prisma directory
-  if (dbFile.startsWith("./") || dbFile.startsWith("../") || !path.isAbsolute(dbFile)) {
-    dbFile = path.resolve(prismaDir, dbFile);
-  }
-  
-  return `file:${dbFile}`;
+if (!process.env.DATABASE_URL) {
+  throw new Error(
+    "DATABASE_URL is not set. Copy apps/server/.env.example to apps/server/.env and fill in the Postgres connection string.",
+  );
 }
-
-process.env.DATABASE_URL = resolveDbPath();
 
 export const config = {
   port: parseInt(process.env.PORT ?? "4000", 10),
