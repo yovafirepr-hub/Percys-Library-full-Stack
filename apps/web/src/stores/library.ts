@@ -1,23 +1,25 @@
 import { create } from "zustand";
-import { api, type BulkOp, type ComicSummary } from "../lib/api";
+import { api, type BulkOp, type ComicSummary, type UploadComicsResult } from "../lib/api";
+
+export interface UploadProgress {
+  /** "uploading" while bytes are streaming, "processing" once they
+   *  are all on the server but the response hasn't arrived yet. */
+  phase: "uploading" | "processing";
+  loaded: number;
+  total: number;
+  fileCount: number;
+}
 
 interface LibraryState {
   comics: ComicSummary[];
   loading: boolean;
   uploading: boolean;
+  uploadProgress: UploadProgress | null;
   query: string;
   filter: "all" | "favorites" | "in-progress" | "completed";
   load: () => Promise<void>;
   scan: () => Promise<{ added: number; removed: number; total: number }>;
-  upload: (files: File[]) => Promise<{
-    uploaded: { name: string; size: number }[];
-    skipped: { name: string; reason: "already-exists" | "duplicated-in-batch" }[];
-    added: number;
-    registered?: number;
-    unreadable?: number;
-    removed: number;
-    total: number;
-  }>;
+  upload: (files: File[]) => Promise<UploadComicsResult>;
   setQuery: (q: string) => void;
   setFilter: (f: LibraryState["filter"]) => void;
   toggleFavorite: (id: string) => Promise<void>;
@@ -32,6 +34,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   comics: [],
   loading: false,
   uploading: false,
+  uploadProgress: null,
   query: "",
   filter: "all",
   async load() {
@@ -56,13 +59,33 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     }
   },
   async upload(files) {
-    set({ uploading: true });
+    set({
+      uploading: true,
+      uploadProgress: { phase: "uploading", loaded: 0, total: 0, fileCount: files.length },
+    });
     try {
-      const result = await api.uploadComics(files);
+      const result = await api.uploadComicsWithProgress(files, {
+        onProgress: (loaded, total) => {
+          set({ uploadProgress: { phase: "uploading", loaded, total, fileCount: files.length } });
+        },
+        onUploadComplete: () => {
+          // Bytes are all uploaded; the server is now extracting and
+          // registering. Switch to the indeterminate "processing" phase.
+          const cur = get().uploadProgress;
+          set({
+            uploadProgress: {
+              phase: "processing",
+              loaded: cur?.loaded ?? 0,
+              total: cur?.total ?? 0,
+              fileCount: files.length,
+            },
+          });
+        },
+      });
       await get().load();
       return result;
     } finally {
-      set({ uploading: false });
+      set({ uploading: false, uploadProgress: null });
     }
   },
   setQuery(query) {

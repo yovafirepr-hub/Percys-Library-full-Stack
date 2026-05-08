@@ -146,6 +146,16 @@ export type BulkOp =
   | "category"
   | "delete";
 
+export interface UploadComicsResult {
+  uploaded: { name: string; size: number }[];
+  skipped: { name: string; reason: "already-exists" | "duplicated-in-batch" }[];
+  added: number;
+  registered?: number;
+  unreadable?: number;
+  removed: number;
+  total: number;
+}
+
 export interface AchievementDto {
   id: string;
   title: string;
@@ -205,21 +215,72 @@ export const api = {
         const body = (await r.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `${r.status} ${r.statusText}`);
       }
-      return r.json() as Promise<{
-        uploaded: { name: string; size: number }[];
-        skipped: { name: string; reason: "already-exists" | "duplicated-in-batch" }[];
-        added: number;
-        registered?: number;
-        unreadable?: number;
-        removed: number;
-        total: number;
-      }>;
+      return r.json() as Promise<UploadComicsResult>;
     } catch (err) {
       if (err instanceof TypeError && err.message === "Failed to fetch") {
         throw new Error("No se pudo conectar con el servidor. ¿Está encendido?");
       }
       throw err;
     }
+  },
+  // XMLHttpRequest-based upload that surfaces real byte-level progress.
+  // Falls back to the same JSON shape as `uploadComics` so callers can
+  // swap one for the other without behaviour changes. The optional
+  // callbacks let UI components render an "uploading… X / Y bytes"
+  // bar plus an indeterminate "processing" phase once the bytes have
+  // finished going up but the server hasn't responded yet.
+  uploadComicsWithProgress: (
+    files: File[],
+    handlers?: {
+      onProgress?: (loaded: number, total: number) => void;
+      onUploadComplete?: () => void;
+    },
+  ) => {
+    return new Promise<UploadComicsResult>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let uploadFinished = false;
+      xhr.upload.addEventListener("progress", (ev) => {
+        if (handlers?.onProgress && ev.lengthComputable) {
+          handlers.onProgress(ev.loaded, ev.total);
+        }
+      });
+      xhr.upload.addEventListener("load", () => {
+        if (uploadFinished) return;
+        uploadFinished = true;
+        handlers?.onUploadComplete?.();
+      });
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const parsed = JSON.parse(xhr.responseText) as UploadComicsResult;
+            resolve(parsed);
+          } catch {
+            reject(new Error("Respuesta inválida del servidor"));
+          }
+          return;
+        }
+        let message = `${xhr.status} ${xhr.statusText}`.trim();
+        try {
+          const body = JSON.parse(xhr.responseText) as { error?: string };
+          if (body && typeof body.error === "string" && body.error) message = body.error;
+        } catch {
+          /* ignore */
+        }
+        reject(new Error(message || "No se pudo subir el archivo"));
+      });
+      xhr.addEventListener("error", () =>
+        reject(new Error("No se pudo conectar con el servidor. ¿Está encendido?")),
+      );
+      xhr.addEventListener("abort", () => reject(new Error("Carga cancelada")));
+      xhr.open("POST", "/api/library/upload");
+      xhr.setRequestHeader("x-owner-id", getOwnerId());
+      const fd = new FormData();
+      for (const f of files) {
+        const name = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+        fd.append("files", f, name);
+      }
+      xhr.send(fd);
+    });
   },
   comic: (id: string) => jsonFetch<ComicSummary>(`/api/comics/${id}`),
   nextComic: (id: string) => jsonFetch<{ next: NextComic | null }>(`/api/comics/${id}/next`),

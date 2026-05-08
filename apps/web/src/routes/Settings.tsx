@@ -10,6 +10,7 @@ import { THEMES, type ThemePreset } from "../lib/themes";
 import { getInitials } from "../lib/profile";
 import {
   DEFAULT_SHORTCUTS,
+  findShortcutConflicts,
   formatShortcutKey,
   normalizeShortcutKey,
   parseShortcutMap,
@@ -75,6 +76,10 @@ export function Settings() {
   const shortcutMap = useMemo(
     () => parseShortcutMap(settingsView?.keyboardShortcuts),
     [settingsView?.keyboardShortcuts],
+  );
+  const shortcutConflicts = useMemo(
+    () => findShortcutConflicts(shortcutMap),
+    [shortcutMap],
   );
 
   const customThemesList: ThemePreset[] = useMemo(() => {
@@ -239,7 +244,24 @@ export function Settings() {
   }
 
   async function patchShortcut(action: ShortcutAction, key: string) {
-    const next: ShortcutMap = { ...shortcutMap, [action]: normalizeShortcutKey(key) };
+    const normalized = normalizeShortcutKey(key);
+    const next: ShortcutMap = { ...shortcutMap, [action]: normalized };
+    // If the user reassigns a key that another action already owns, swap
+    // the previous binding into that slot so the user always ends up
+    // with a conflict-free map. Without this, two actions silently
+    // share the same shortcut and one of them stops responding.
+    const previousBinding = shortcutMap[action];
+    for (const otherAction of Object.keys(shortcutMap) as ShortcutAction[]) {
+      if (otherAction === action) continue;
+      if (normalizeShortcutKey(shortcutMap[otherAction]) === normalized) {
+        next[otherAction] = previousBinding;
+      }
+    }
+    await patch("keyboardShortcuts", JSON.stringify(next));
+  }
+
+  async function resetShortcut(action: ShortcutAction) {
+    const next: ShortcutMap = { ...shortcutMap, [action]: DEFAULT_SHORTCUTS[action] };
     await patch("keyboardShortcuts", JSON.stringify(next));
   }
 
@@ -1282,54 +1304,86 @@ export function Settings() {
               description="Pulsa una tecla en el cuadro para reasignar. Las teclas de navegación pueden combinarse con las flechas o letras."
             >
               <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4 space-y-4">
+                {Object.keys(shortcutConflicts).length > 0 && (
+                  <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] font-semibold text-amber-200">
+                    Hay teclas asignadas a más de una acción. El reasignar
+                    automático intercambia la tecla previa con la acción
+                    afectada para evitarlo, pero puedes restaurar los
+                    predeterminados con el botón ↺ de cada fila.
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <ShortcutField
                     label="Siguiente página"
                     value={shortcutMap.next}
+                    defaultValue={DEFAULT_SHORTCUTS.next}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.next)]}
                     onCapture={(k) => void patchShortcut("next", k)}
+                    onReset={() => void resetShortcut("next")}
                   />
                   <ShortcutField
                     label="Página anterior"
                     value={shortcutMap.prev}
+                    defaultValue={DEFAULT_SHORTCUTS.prev}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.prev)]}
                     onCapture={(k) => void patchShortcut("prev", k)}
+                    onReset={() => void resetShortcut("prev")}
                   />
                   <ShortcutField
                     label="Pantalla completa"
                     value={shortcutMap.toggleFs}
+                    defaultValue={DEFAULT_SHORTCUTS.toggleFs}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.toggleFs)]}
                     onCapture={(k) => void patchShortcut("toggleFs", k)}
+                    onReset={() => void resetShortcut("toggleFs")}
                   />
                   <ShortcutField
                     label="Miniaturas"
                     value={shortcutMap.toggleStrip}
+                    defaultValue={DEFAULT_SHORTCUTS.toggleStrip}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.toggleStrip)]}
                     onCapture={(k) => void patchShortcut("toggleStrip", k)}
+                    onReset={() => void resetShortcut("toggleStrip")}
                   />
                   <ShortcutField
                     label="Marcadores"
                     value={shortcutMap.toggleBookmarks}
+                    defaultValue={DEFAULT_SHORTCUTS.toggleBookmarks}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.toggleBookmarks)]}
                     onCapture={(k) => void patchShortcut("toggleBookmarks", k)}
+                    onReset={() => void resetShortcut("toggleBookmarks")}
                   />
                   <ShortcutField
                     label="Ir a página"
                     value={shortcutMap.goto}
+                    defaultValue={DEFAULT_SHORTCUTS.goto}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.goto)]}
                     onCapture={(k) => void patchShortcut("goto", k)}
+                    onReset={() => void resetShortcut("goto")}
                   />
                   <ShortcutField
                     label="Ayuda"
                     value={shortcutMap.toggleHelp}
+                    defaultValue={DEFAULT_SHORTCUTS.toggleHelp}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.toggleHelp)]}
                     onCapture={(k) => void patchShortcut("toggleHelp", k)}
+                    onReset={() => void resetShortcut("toggleHelp")}
                   />
                   <ShortcutField
                     label="Salir lector"
                     value={shortcutMap.exit}
+                    defaultValue={DEFAULT_SHORTCUTS.exit}
+                    conflicts={!!shortcutConflicts[normalizeShortcutKey(shortcutMap.exit)]}
                     onCapture={(k) => void patchShortcut("exit", k)}
+                    onReset={() => void resetShortcut("exit")}
                   />
                 </div>
-                <div className="flex items-center justify-between pt-2 border-t border-white/5">
-                  <p className="text-xs text-slate-500">
-                    Las teclas reservadas (Tab, Ctrl, Alt, Shift solas) son ignoradas.
+                <div className="flex items-center justify-between pt-2 border-t border-white/5 gap-3">
+                  <p className="text-xs text-slate-500 flex-1">
+                    Pulsa el atajo para entrar en modo de captura y luego la tecla nueva. Esc cancela. Las teclas Tab y modificadores solos (Ctrl, Alt, Shift, Meta) son ignorados.
                   </p>
-                  <button onClick={() => void resetShortcuts()} className="pl-btn text-xs">
-                    Restaurar por defecto
+                  <button onClick={() => void resetShortcuts()} className="pl-btn text-xs whitespace-nowrap">
+                    Restaurar todos
                   </button>
                 </div>
               </div>
@@ -1508,27 +1562,106 @@ function SummaryCard({
 function ShortcutField({
   label,
   value,
+  defaultValue,
+  conflicts,
   onCapture,
+  onReset,
 }: {
   label: string;
   value: string;
+  defaultValue: string;
+  /** True when this binding shares its key with at least one other
+   *  action — drives the warning ring and the conflict tooltip. */
+  conflicts: boolean;
   onCapture: (key: string) => void;
+  onReset: () => void;
 }) {
+  const [capturing, setCapturing] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const isCustom = normalizeShortcutKey(value) !== normalizeShortcutKey(defaultValue);
+
+  // Stop capturing whenever the binding successfully changes — that
+  // way the user gets immediate visual feedback and isn't left
+  // wondering whether the keystroke registered.
+  useEffect(() => {
+    setCapturing(false);
+  }, [value]);
+
   return (
-    <label className="rounded-xl border border-white/5 bg-white/[0.01] p-3 flex items-center justify-between gap-3">
-      <span className="text-xs font-semibold text-slate-300">{label}</span>
-      <input
-        readOnly
-        value={formatShortcutKey(value)}
-        onKeyDown={(e) => {
-          e.preventDefault();
-          if (e.key === "Tab") return;
-          if (e.key === "Control" || e.key === "Alt" || e.key === "Shift" || e.key === "Meta") return;
-          onCapture(e.key);
-        }}
-        className="w-24 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-center text-xs font-black text-white focus:outline-none focus:border-blue-500/50"
-      />
-    </label>
+    <div
+      className={clsx(
+        "rounded-xl border bg-white/[0.01] p-3 flex items-center justify-between gap-3 transition-colors",
+        conflicts ? "border-amber-400/40 bg-amber-500/5" : "border-white/5",
+      )}
+    >
+      <div className="min-w-0">
+        <div className="text-xs font-semibold text-slate-300 truncate">{label}</div>
+        {conflicts && (
+          <div className="mt-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
+            Tecla repetida
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <button
+          ref={buttonRef}
+          type="button"
+          aria-label={`Cambiar atajo para ${label}. Pulsa Enter o Espacio y luego la tecla nueva.`}
+          onClick={() => setCapturing((c) => !c)}
+          onBlur={() => setCapturing(false)}
+          onKeyDown={(e) => {
+            // Toggle capture with Enter / Space when the button is focused.
+            if (!capturing && (e.key === "Enter" || e.key === " ")) {
+              e.preventDefault();
+              setCapturing(true);
+              return;
+            }
+            if (!capturing) return;
+            // Don't capture lone modifier keys — they're meaningless on
+            // their own and would bind to literal "Shift", "Control"…
+            if (e.key === "Tab") return;
+            if (
+              e.key === "Control" ||
+              e.key === "Alt" ||
+              e.key === "Shift" ||
+              e.key === "Meta"
+            )
+              return;
+            e.preventDefault();
+            // Escape cancels capture instead of binding the action to
+            // Escape — otherwise users would inevitably break the "Salir
+            // del lector" shortcut by pressing Escape to back out.
+            if (e.key === "Escape") {
+              setCapturing(false);
+              return;
+            }
+            onCapture(e.key);
+          }}
+          className={clsx(
+            "w-24 rounded-lg border px-2 py-1 text-center text-xs font-black text-white focus:outline-none focus-visible:border-blue-500/60 transition-all",
+            capturing
+              ? "border-blue-500/60 bg-blue-500/10 animate-pulse"
+              : conflicts
+                ? "border-amber-400/40 bg-amber-500/5 hover:border-amber-400/60"
+                : "border-white/10 bg-white/[0.03] hover:border-white/20",
+          )}
+        >
+          {capturing ? "Pulsa…" : formatShortcutKey(value)}
+        </button>
+        <button
+          type="button"
+          onClick={onReset}
+          disabled={!isCustom}
+          aria-label={`Restaurar atajo predeterminado de ${label}`}
+          title="Restaurar predeterminado"
+          className={clsx(
+            "rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1 text-[11px] text-slate-400 transition-colors hover:text-white hover:border-white/10 disabled:opacity-30 disabled:cursor-not-allowed",
+          )}
+        >
+          ↺
+        </button>
+      </div>
+    </div>
   );
 }
 
