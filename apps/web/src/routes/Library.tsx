@@ -7,6 +7,7 @@ import { useToasts } from "../stores/toasts";
 import { CoverCard } from "../components/CoverCard";
 import { Avatar } from "../components/AvatarPresets";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ImportProgressOverlay, type ImportPhase } from "../components/library/ImportProgressOverlay";
 import { getDisplayName, getInitials } from "../lib/profile";
 import { pruneSelectionToVisible } from "../lib/selection";
 
@@ -35,6 +36,7 @@ export function Library({ scope = "all" }: Props) {
     comics,
     loading,
     uploading,
+    uploadProgress,
     query,
     filter,
     load,
@@ -50,6 +52,9 @@ export function Library({ scope = "all" }: Props) {
   const push = useToasts((s) => s.push);
   const [dragOver, setDragOver] = useState(false);
   const [showReturningBanner, setShowReturningBanner] = useState(false);
+  // Tracks the last completed import so the overlay can stay open with
+  // a result summary even after `uploading` flips back to false.
+  const [importPhase, setImportPhase] = useState<ImportPhase>({ kind: "idle" });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   // Multi-select mode + selection set. Both reset whenever scope changes
@@ -115,24 +120,38 @@ export function Library({ scope = "all" }: Props) {
       push("No se reconocieron archivos compatibles (.cbz, .cbr, .pdf, .zip, .rar o imágenes)", "error");
       return;
     }
+    setImportPhase({ kind: "uploading", loaded: 0, total: 0, fileCount: files.length });
     try {
       const r = await upload(files);
-      const registered = r.registered ?? r.added;
-      const unreadable = r.unreadable ?? Math.max(0, r.uploaded.length - registered);
-      const noun = r.added === 1 ? "cómic" : "cómics";
-      const head = `Importado${r.added === 1 ? "" : "s"} ${r.added} ${noun}`;
-      const skippedTotal = r.skipped.length + unreadable;
-      const tail =
-        skippedTotal > 0
-          ? ` · ${skippedTotal} omitido${skippedTotal === 1 ? "" : "s"}`
-          : "";
-      const tone = r.added === 0 ? "warn" : "success";
-      push(`${head}${tail}`, tone);
+      // Settle on the result-summary phase so the overlay shows what
+      // happened (added / skipped / unreadable) instead of disappearing
+      // the moment the request resolves.
+      setImportPhase({ kind: "done", result: r });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Error subiendo archivos";
-      push(msg, "error");
+      setImportPhase({ kind: "error", message: msg });
     }
   }, [upload, push]);
+
+  // Mirror live byte-level progress from the store into the overlay's
+  // local phase. The store is the source of truth while the request is
+  // in flight; once it resolves, `handleUpload` swaps to `done`/`error`
+  // and we leave the overlay alone.
+  useEffect(() => {
+    if (!uploadProgress) return;
+    setImportPhase((prev) => {
+      if (prev.kind === "done" || prev.kind === "error") return prev;
+      if (uploadProgress.phase === "uploading") {
+        return {
+          kind: "uploading",
+          loaded: uploadProgress.loaded,
+          total: uploadProgress.total,
+          fileCount: uploadProgress.fileCount,
+        };
+      }
+      return { kind: "processing", fileCount: uploadProgress.fileCount };
+    });
+  }, [uploadProgress]);
 
   const sortMode = settings?.librarySort ?? "lastReadAt";
   const viewMode = settings?.libraryView ?? "grid";
@@ -759,11 +778,22 @@ export function Library({ scope = "all" }: Props) {
       )}
 
       {selectMode && (
-        <div className="fixed bottom-6 left-1/2 z-50 w-[min(94vw,56rem)] -translate-x-1/2 animate-fade-in px-2 md:bottom-8">
-          {/* Centralised management toolbar. Stays visible the whole time
-              the user is in select mode so the available bulk actions and
-              the selection counter are always reachable from one place. */}
-          <div className="rounded-2xl border border-white/10 bg-slate-950/95 px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+        // Outer wrapper spans the full viewport width so the bar stays
+        // anchored to the bottom regardless of any ancestor's `overflow:
+        // hidden`. `pointer-events-none` lets clicks pass through the
+        // empty area to the comics behind, while the inner card opts
+        // back in with `pointer-events-auto`. The `pb-` rules layer the
+        // device safe-area on top of a baseline (20 mobile / 6 desktop)
+        // so the toolbar always clears the iOS home indicator AND the
+        // mobile bottom-nav, which the old `bottom-6` clipped against.
+        <div
+          className="pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex justify-center px-3 animate-fade-in pb-[max(env(safe-area-inset-bottom),0px)] mb-20 md:mb-6"
+          aria-label="Acciones masivas"
+        >
+          <div className="pointer-events-auto w-full max-w-3xl rounded-2xl border border-white/10 bg-slate-950/95 px-3 py-2.5 shadow-[0_24px_80px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+            {/* Centralised management toolbar. Stays visible the whole time
+                the user is in select mode so the available bulk actions and
+                the selection counter are always reachable from one place. */}
             <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2">
               <div className="flex items-center gap-2.5">
                 <div
@@ -865,38 +895,36 @@ export function Library({ scope = "all" }: Props) {
           className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50"
         />
       </ConfirmDialog>
-      {(dragOver || uploading) && (
+      {dragOver && !uploading && (
+        // Drag-and-drop hint overlay. Only visible while a drag is over
+        // the page and no upload is currently in flight — the
+        // ImportProgressOverlay below owns every other "I'm busy" state.
         <div
-          className="pointer-events-auto fixed inset-0 z-[100] flex items-center justify-center bg-[#030408]/90 backdrop-blur-xl animate-fade-in"
+          className="pointer-events-none fixed inset-0 z-[150] flex items-center justify-center bg-[#030408]/90 backdrop-blur-xl animate-fade-in"
           aria-live="polite"
         >
           <div className="flex flex-col items-center gap-8 max-w-sm text-center">
             <div className="relative">
               <div className="h-32 w-32 rounded-[40px] bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-5xl shadow-2xl animate-bounce">
-                {uploading ? "⏳" : "📦"}
+                📦
               </div>
               <div className="absolute -inset-4 bg-blue-500/20 blur-3xl -z-10 animate-pulse" />
             </div>
-            
+
             <div className="space-y-2">
-              <h3 className="text-2xl font-black text-white">
-                {uploading ? "Importando contenido" : "Suelta tus archivos"}
-              </h3>
+              <h3 className="text-2xl font-black text-white">Suelta tus archivos</h3>
               <p className="text-slate-500 font-medium leading-relaxed">
-                {uploading 
-                  ? "Estamos procesando tus cómics para que puedas leerlos de inmediato." 
-                  : "Arrastra tus archivos CBZ, CBR o PDF aquí para añadirlos a la biblioteca."}
+                Arrastra tus archivos CBZ, CBR o PDF aquí para añadirlos a la biblioteca.
               </p>
             </div>
-            
-            {uploading && (
-              <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden border border-white/5">
-                <div className="h-full w-[32%] bg-blue-500/90" style={{ animation: "loading-indeterminate 1.35s ease-in-out infinite" }} />
-              </div>
-            )}
           </div>
         </div>
       )}
+
+      <ImportProgressOverlay
+        phase={importPhase}
+        onClose={() => setImportPhase({ kind: "idle" })}
+      />
     </div>
   );
 }

@@ -65,6 +65,18 @@ export function ContinuousView({
     () => new Set([current]),
   );
 
+  // Reset the "last set scroll target" + visible page set whenever the
+  // user opens a different comic. Without this we'd skip the scroll
+  // jump when the new comic's `current` happens to match the previous
+  // comic's last position (very common: both default to 0), leaving
+  // the user staring at the first page instead of where they were.
+  useEffect(() => {
+    lastScrollSet.current = -1;
+    setVisiblePages(new Set([current]));
+    // We intentionally only react to comicId here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comicId]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { ShortcutMap } from "../lib/shortcuts";
+import { keysMatch, type ShortcutMap } from "../lib/shortcuts";
 
 interface Bindings {
   next: () => void;
@@ -88,42 +88,45 @@ export function useKeybinds(b: Bindings, enabled = true) {
       const gotoKey = b.shortcuts?.goto ?? "g";
       const helpKey = b.shortcuts?.toggleHelp ?? "?";
       const exitKey = b.shortcuts?.exit ?? "Escape";
-      if (e.key === nextKey) {
+      // Match the user's customised bindings BEFORE the hard-coded
+      // PageUp/PageDown/Space defaults. `keysMatch` makes single-letter
+      // bindings work regardless of capitalisation (Shift+a, Caps Lock).
+      if (keysMatch(nextKey, e.key)) {
         e.preventDefault();
         b.next();
         return;
       }
-      if (e.key === prevKey) {
+      if (keysMatch(prevKey, e.key)) {
         e.preventDefault();
         b.prev();
         return;
       }
-      if (e.key.toLowerCase() === fsKey.toLowerCase()) {
+      if (keysMatch(fsKey, e.key)) {
         e.preventDefault();
         b.toggleFs();
         return;
       }
-      if (e.key.toLowerCase() === stripKey.toLowerCase()) {
+      if (keysMatch(stripKey, e.key)) {
         e.preventDefault();
         b.toggleStrip();
         return;
       }
-      if (e.key.toLowerCase() === bookmarksKey.toLowerCase() && b.toggleBookmarks) {
+      if (keysMatch(bookmarksKey, e.key) && b.toggleBookmarks) {
         e.preventDefault();
         b.toggleBookmarks();
         return;
       }
-      if (e.key.toLowerCase() === gotoKey.toLowerCase() && b.goto) {
+      if (keysMatch(gotoKey, e.key) && b.goto) {
         e.preventDefault();
         b.goto();
         return;
       }
-      if (e.key === helpKey && b.toggleHelp) {
+      if (keysMatch(helpKey, e.key) && b.toggleHelp) {
         e.preventDefault();
         b.toggleHelp();
         return;
       }
-      if (e.key === exitKey) {
+      if (keysMatch(exitKey, e.key)) {
         b.exit();
         return;
       }

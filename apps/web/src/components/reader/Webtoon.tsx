@@ -111,10 +111,21 @@ export function WebtoonView({
     return () => observer.disconnect();
   }, [comicId, pageCount]);
 
-  // Reset loaded set when comic changes.
+  // Reset loaded set when comic changes — and seed it with a window
+  // around the page the user is opening to, not always [0,1,2]. If the
+  // user resumes on page 47 we want pages 46/47/48 mounted, not pages
+  // 0–2 which they'll never see before the IO observer fires.
   useEffect(() => {
-    setLoaded(new Set([0, 1, 2]));
+    const seed = new Set<number>();
+    for (let i = -1; i <= 1; i++) {
+      const n = current + i;
+      if (n >= 0 && n < pageCount) seed.add(n);
+    }
+    if (seed.size === 0) seed.add(0);
+    setLoaded(seed);
     lastScrollSet.current = -1;
+    // Intentional: only re-seed on comic switch, not on each `current`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [comicId]);
 
   return (
@@ -164,7 +175,19 @@ export function WebtoonView({
                   const img = e.currentTarget as HTMLImageElement;
                   if (!img.dataset.retried) {
                     img.dataset.retried = "1";
-                    img.src = api.pageUrl(comicId, i, autoCrop, imageQuality) + `&retry=${Date.now()}`;
+                    const base = api.pageUrl(comicId, i, autoCrop, imageQuality);
+                    img.src = `${base}${base.includes("?") ? "&" : "?"}retry=${Date.now()}`;
+                    return;
+                  }
+                  // After one retry we still couldn't load this image;
+                  // notify the reader so its self-healing pipeline can
+                  // re-fetch the comic metadata. Without this dispatch
+                  // a stale `pageCount` keeps Webtoon scrolling into a
+                  // permanent broken-image at the bottom.
+                  if (typeof window !== "undefined") {
+                    window.dispatchEvent(
+                      new CustomEvent("reader:page-error", { detail: { src: img.src } }),
+                    );
                   }
                 }}
               />
