@@ -329,11 +329,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ categories }),
     }),
-  bulk: (ids: string[], op: BulkOp, category?: string | null) =>
-    jsonFetch<{ ok: boolean; affected: number }>(`/api/comics/bulk`, {
+  bulk: (ids: string[], op: BulkOp, category?: string | null) => {
+    // Forward `category` for any op that needs a value: the legacy
+    // `category` (replace primary slot, including `null` to clear) and
+    // the new additive `categoryAdd` / `categoryRemove` ops which carry
+    // the tag string to merge or remove. Dropping the field for the
+    // additive ops (the previous bug) made the server see an empty
+    // value and short-circuit with `affected = 0`.
+    const needsCategory =
+      op === "category" || op === "categoryAdd" || op === "categoryRemove";
+    return jsonFetch<{ ok: boolean; affected: number }>(`/api/comics/bulk`, {
       method: "POST",
-      body: JSON.stringify({ ids, op, ...(op === "category" ? { category } : {}) }),
-    }),
+      body: JSON.stringify({ ids, op, ...(needsCategory ? { category } : {}) }),
+    });
+  },
   settings: () => jsonFetch<SettingsDto>("/api/settings"),
   updateSettings: (patch: Partial<SettingsDto>) =>
     jsonFetch<SettingsDto>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
