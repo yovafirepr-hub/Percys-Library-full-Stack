@@ -39,6 +39,12 @@ export function PagedView({ comicId, page, fitMode, zoom, rtl, autoCrop, axis, o
           e.preventDefault();
           return;
         }
+        // Stop the click from bubbling up to any ancestor that might
+        // also be listening for clicks (e.g. an immersive-mode toggle
+        // on the reader shell). The page-turn is the user's intent;
+        // we don't want a single click to fire two contradictory
+        // actions ("turn page" + "toggle UI").
+        e.stopPropagation();
         const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
         if (axis === "vertical") {
           // Vertical paging: top zone = prev, bottom zone = next.
@@ -70,8 +76,12 @@ export function PagedView({ comicId, page, fitMode, zoom, rtl, autoCrop, axis, o
         )}
         style={{ transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})` }}
       >
+        {/* No `key` here on purpose: ReaderPageImage handles the
+            src→src cross-fade itself, and re-keying on every page
+            change would force a fresh mount, throw away the previous
+            decoded frame, and re-introduce the placeholder flicker
+            that this whole refactor is fixing. */}
         <ReaderPageImage
-          key={`${comicId}-${page}`}
           src={api.pageUrl(comicId, page, autoCrop, imageQuality)}
           alt={`Página ${page + 1}`}
           loading="eager"

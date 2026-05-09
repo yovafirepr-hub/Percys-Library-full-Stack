@@ -67,6 +67,10 @@ export function DoublePage({ comicId, page, pageCount, fitMode, zoom, rtl, autoC
           e.preventDefault();
           return;
         }
+        // See PagedHorizontal: keep the page-turn click from bubbling
+        // up to ancestors so a single click can't trigger two
+        // contradictory actions.
+        e.stopPropagation();
         const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
         const x = e.clientX - rect.left;
         const ratio = x / rect.width;
@@ -86,9 +90,16 @@ export function DoublePage({ comicId, page, pageCount, fitMode, zoom, rtl, autoC
         )}
         style={{ transform: `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`, gap: `${pageGap}px` }}
       >
-        {pages.map((p) => (
+        {/* Stable two-slot key. Without this the React reconciler
+            would tear down + remount each `<ReaderPageImage>` on
+            every page change (because the per-page `${comicId}-${p}`
+            key changes), throwing away the cross-fade. Keying on
+            slot-index instead means the same component instance is
+            re-used and just receives a new `src`, which is exactly
+            what its internal preloader wants. */}
+        {pages.map((p, slot) => (
           <ReaderPageImage
-            key={`${comicId}-${p}`}
+            key={`slot-${slot}`}
             src={api.pageUrl(comicId, p, autoCrop, imageQuality)}
             alt={`Página ${p + 1}`}
             loading={p === page ? "eager" : "lazy"}

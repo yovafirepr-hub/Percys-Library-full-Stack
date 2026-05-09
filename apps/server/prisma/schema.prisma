@@ -18,7 +18,16 @@ model Comic {
   sizeBytes    BigInt   @default(0)
   addedAt      DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  // Primary category — used as a single, opinionated classification
+  // ("Marvel", "DC", "Manga"). Kept for back-compat with the older
+  // single-category UI and as the value the legacy filter pill reads.
   category     String?
+  // Additive multi-tag list. The bulk `categoryAdd` / `categoryRemove`
+  // ops merge into this array instead of overwriting, fixing the
+  // wipe-out bug where assigning a new category was destroying the
+  // previous one. `category` (single) and `categories` (array) are
+  // kept in sync at write time so old reads still work.
+  categories   String[] @default([])
   isFavorite   Boolean  @default(false)
   coverPath    String?
   // Reading progress
