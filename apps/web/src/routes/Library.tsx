@@ -165,7 +165,16 @@ export function Library({ scope = "all" }: Props) {
       if (filter === "in-progress" && (c.completed || c.currentPage === 0)) return false;
       if (filter === "completed" && !c.completed) return false;
       if (query.trim() && !c.title.toLowerCase().includes(query.trim().toLowerCase())) return false;
-      if (selectedCategory && c.category !== selectedCategory) return false;
+      // Match against both the legacy primary slot AND the additive
+      // `categories` array so a comic tagged as "Marvel" + "X-Men"
+      // surfaces under either filter without losing the other.
+      if (
+        selectedCategory &&
+        c.category !== selectedCategory &&
+        !c.categories.includes(selectedCategory)
+      ) {
+        return false;
+      }
       return true;
     });
     // Sort copies the array so React doesn't re-render the same identity.
@@ -299,11 +308,39 @@ export function Library({ scope = "all" }: Props) {
     return Array.from(event.dataTransfer?.types ?? []).includes("Files");
   }, []);
 
+  // Tags currently on at least one of the selected comics. Powers the
+  // "click to remove" chips in the category editor so the user can see
+  // which labels they would be stripping off.
+  const selectedTagsForRemoval = useMemo<string[]>(() => {
+    if (selected.size === 0) return [];
+    const set = new Set<string>();
+    for (const c of comics) {
+      if (!selected.has(c.id)) continue;
+      if (c.category) set.add(c.category);
+      for (const t of c.categories) {
+        const trimmed = t.trim();
+        if (trimmed) set.add(trimmed);
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [comics, selected]);
+
   const categories = useMemo<CategoryFilter[]>(() => {
+    // Aggregate over BOTH the legacy primary `category` slot and the
+    // additive `categories[]` array so a comic tagged as "Marvel" +
+    // "X-Men" surfaces under both labels in the filter dropdown,
+    // each with its own count. We dedupe per-comic via a Set so a
+    // comic with the same value in both fields counts once.
     const map = new Map<string, number>();
     for (const c of comics) {
-      if (c.category) {
-        map.set(c.category, (map.get(c.category) ?? 0) + 1);
+      const tags = new Set<string>();
+      if (c.category) tags.add(c.category);
+      for (const t of c.categories) {
+        const trimmed = t.trim();
+        if (trimmed) tags.add(trimmed);
+      }
+      for (const t of tags) {
+        map.set(t, (map.get(t) ?? 0) + 1);
       }
     }
     return Array.from(map.entries())
@@ -873,27 +910,62 @@ export function Library({ scope = "all" }: Props) {
       />
       <ConfirmDialog
         open={categoryEditorOpen}
-        title="Asignar categoría"
-        description="Escribe la categoría para los cómics seleccionados. Déjalo vacío para limpiar."
-        confirmLabel="Aplicar"
+        title="Añadir etiqueta"
+        description="Añade una etiqueta a los cómics seleccionados sin borrar las existentes. Toca una etiqueta de abajo para quitarla."
+        confirmLabel="Añadir"
         busy={bulkBusy}
         // Let the inner <input autoFocus /> own focus so the user can
         // start typing immediately.
         autoFocusConfirm={false}
-        onConfirm={() => void runBulk("category", categoryValue.trim() || null)}
+        // Use the additive `categoryAdd` op so assigning "Marvel" to a
+        // comic that's already tagged "X-Men" keeps both labels — this
+        // is the wipe-out fix the user reported. Empty input is a
+        // no-op (handled server-side too).
+        onConfirm={() => {
+          const value = categoryValue.trim();
+          if (!value) {
+            setCategoryEditorOpen(false);
+            setCategoryValue("");
+            return;
+          }
+          void runBulk("categoryAdd", value);
+        }}
         onCancel={() => {
           if (bulkBusy) return;
           setCategoryEditorOpen(false);
           setCategoryValue("");
         }}
       >
-        <input
-          autoFocus
-          value={categoryValue}
-          onChange={(e) => setCategoryValue(e.target.value)}
-          placeholder="Ejemplo: Shonen, DC, Pendientes..."
-          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50"
-        />
+        <div className="space-y-3">
+          <input
+            autoFocus
+            value={categoryValue}
+            onChange={(e) => setCategoryValue(e.target.value)}
+            placeholder="Ejemplo: Shonen, DC, Pendientes..."
+            className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50"
+          />
+          {selectedTagsForRemoval.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                Etiquetas en la selección · click para quitar
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {selectedTagsForRemoval.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    disabled={bulkBusy}
+                    onClick={() => void runBulk("categoryRemove", tag)}
+                    className="group inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-semibold text-slate-300 transition-all hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span>{tag}</span>
+                    <span className="text-slate-500 group-hover:text-red-300" aria-hidden>×</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </ConfirmDialog>
       {dragOver && !uploading && (
         // Drag-and-drop hint overlay. Only visible while a drag is over

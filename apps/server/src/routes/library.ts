@@ -90,6 +90,7 @@ libraryRouter.get(
         completed: boolean;
         isFavorite: boolean;
         category: string | null;
+        categories: string[];
         addedAt: Date;
         updatedAt: Date;
         lastReadAt: Date | null;
@@ -104,6 +105,7 @@ libraryRouter.get(
         completed: c.completed,
         isFavorite: c.isFavorite,
         category: c.category,
+        categories: c.categories ?? [],
         addedAt: c.addedAt,
         updatedAt: c.updatedAt,
         lastReadAt: c.lastReadAt,

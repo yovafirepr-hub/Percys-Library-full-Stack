@@ -6,7 +6,15 @@ export interface ComicSummary {
   currentPage: number;
   completed: boolean;
   isFavorite: boolean;
+  /** Legacy single primary category. New code should prefer `categories`
+   *  for additive multi-tag organisation; `category` is kept as a single
+   *  opinionated label and is auto-seeded from the first tag when set. */
   category: string | null;
+  /** Additive multi-tag list. Bulk `categoryAdd` / `categoryRemove`
+   *  operations merge into this array instead of overwriting, so a
+   *  comic can carry multiple labels ("Marvel" + "X-Men") without one
+   *  wiping out the other. */
+  categories: string[];
   addedAt: string;
   updatedAt: string;
   lastReadAt: string | null;
@@ -144,6 +152,12 @@ export type BulkOp =
   | "markCompleted"
   | "markUnread"
   | "category"
+  /** Additive: append a category to each selected comic without
+   *  overwriting its existing tags. Send the value in `category`. */
+  | "categoryAdd"
+  /** Additive: remove a category value from each selected comic.
+   *  Send the value in `category`. */
+  | "categoryRemove"
   | "delete";
 
 export interface UploadComicsResult {
@@ -307,11 +321,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ category }),
     }),
-  bulk: (ids: string[], op: BulkOp, category?: string | null) =>
-    jsonFetch<{ ok: boolean; affected: number }>(`/api/comics/bulk`, {
+  /** Replace the full categories array for a comic. Pass the merged
+   *  list (existing + new). The server dedupes / trims and keeps the
+   *  legacy primary `category` field consistent with the array. */
+  setCategories: (id: string, categories: string[]) =>
+    jsonFetch<{ ok: boolean; categories: string[] }>(`/api/comics/${id}/categories`, {
       method: "POST",
-      body: JSON.stringify({ ids, op, ...(op === "category" ? { category } : {}) }),
+      body: JSON.stringify({ categories }),
     }),
+  bulk: (ids: string[], op: BulkOp, category?: string | null) => {
+    // Forward `category` for any op that needs a value: the legacy
+    // `category` (replace primary slot, including `null` to clear) and
+    // the new additive `categoryAdd` / `categoryRemove` ops which carry
+    // the tag string to merge or remove. Dropping the field for the
+    // additive ops (the previous bug) made the server see an empty
+    // value and short-circuit with `affected = 0`.
+    const needsCategory =
+      op === "category" || op === "categoryAdd" || op === "categoryRemove";
+    return jsonFetch<{ ok: boolean; affected: number }>(`/api/comics/bulk`, {
+      method: "POST",
+      body: JSON.stringify({ ids, op, ...(needsCategory ? { category } : {}) }),
+    });
+  },
   settings: () => jsonFetch<SettingsDto>("/api/settings"),
   updateSettings: (patch: Partial<SettingsDto>) =>
     jsonFetch<SettingsDto>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),

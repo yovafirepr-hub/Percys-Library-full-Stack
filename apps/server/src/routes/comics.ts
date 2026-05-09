@@ -94,9 +94,12 @@ const bulkSchema = z.object({
     "markCompleted",
     "markUnread",
     "category",
+    "categoryAdd",
+    "categoryRemove",
     "delete",
   ]),
-  // Only used for op="category"; null clears the category.
+  // Used for op="category" (null clears the primary category) and as
+  // the value to add/remove for op="categoryAdd"/"categoryRemove".
   category: z.string().nullable().optional(),
 });
 
@@ -157,11 +160,81 @@ comicsRouter.post(
         break;
       }
       case "category": {
+        // Replace the primary single category. We don't touch the
+        // additive `categories` array here — the user can clear or
+        // overwrite the legacy primary slot without losing tag
+        // assignments. To merge into the array instead, callers should
+        // use op="categoryAdd".
         const r = await prisma.comic.updateMany({
           where: { ownerId, id: { in: ids } },
           data: { category: category ?? null },
         });
         affected = r.count;
+        break;
+      }
+      case "categoryAdd": {
+        // Additive merge: read each comic's current categories array,
+        // append the new value if not already present, and persist.
+        // This is the fix for the wipe-out bug where assigning a new
+        // category was overwriting the previous one.
+        const value = (category ?? "").trim();
+        if (!value) {
+          affected = 0;
+          break;
+        }
+        const targets = await prisma.comic.findMany({
+          where: { ownerId, id: { in: ids } },
+          select: { id: true, categories: true, category: true },
+        });
+        const updates = await Promise.all(
+          targets
+            .filter((c) => !c.categories.includes(value))
+            .map((c) =>
+              prisma.comic.update({
+                where: { id: c.id },
+                data: {
+                  categories: { set: [...c.categories, value] },
+                  // Seed the legacy primary slot with the first tag
+                  // so older filters keep working for users who only
+                  // ever apply one category.
+                  ...(c.category ? {} : { category: value }),
+                },
+              }),
+            ),
+        );
+        affected = updates.length;
+        break;
+      }
+      case "categoryRemove": {
+        const value = (category ?? "").trim();
+        if (!value) {
+          affected = 0;
+          break;
+        }
+        const targets = await prisma.comic.findMany({
+          where: { ownerId, id: { in: ids } },
+          select: { id: true, categories: true, category: true },
+        });
+        const updates = await Promise.all(
+          targets
+            .filter((c) => c.categories.includes(value))
+            .map((c) => {
+              const nextArr = c.categories.filter((x) => x !== value);
+              return prisma.comic.update({
+                where: { id: c.id },
+                data: {
+                  categories: { set: nextArr },
+                  // If the legacy primary was this value, fall back to
+                  // the next remaining tag (or null if none) so the
+                  // single-field UI stays consistent.
+                  ...(c.category === value
+                    ? { category: nextArr[0] ?? null }
+                    : {}),
+                },
+              });
+            }),
+        );
+        affected = updates.length;
         break;
       }
       case "delete": {
@@ -224,6 +297,7 @@ comicsRouter.get(
       completed: comic.completed,
       isFavorite: comic.isFavorite,
       category: comic.category,
+      categories: comic.categories ?? [],
       sizeBytes: Number(comic.sizeBytes),
       lastZoom: comic.lastZoom,
     });
@@ -436,9 +510,57 @@ comicsRouter.post(
     const parsed = categorySchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const ownerId = getOwnerId(req);
+    const exists = await prisma.comic.findFirst({ where: { id: req.params.id, ownerId }, select: { id: true, categories: true } });
+    if (!exists) return res.status(404).json({ error: "Not found" });
+    const next = parsed.data.category;
+    // Update the primary slot AND seed/keep the array consistent:
+    // setting a non-null primary adds it to the array if missing;
+    // clearing the primary leaves the array intact (use the bulk
+    // categoryRemove op to drop a tag).
+    const nextArray = next && !exists.categories.includes(next)
+      ? [...exists.categories, next]
+      : exists.categories;
+    await prisma.comic.update({
+      where: { id: req.params.id },
+      data: {
+        category: next,
+        categories: { set: nextArray },
+      },
+    });
+    res.json({ ok: true });
+  }),
+);
+
+const categoryArraySchema = z.object({ categories: z.array(z.string().min(1).max(80)).max(50) });
+
+comicsRouter.post(
+  "/:id/categories",
+  asyncHandler(async (req, res) => {
+    const parsed = categoryArraySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const ownerId = getOwnerId(req);
     const exists = await prisma.comic.findFirst({ where: { id: req.params.id, ownerId }, select: { id: true } });
     if (!exists) return res.status(404).json({ error: "Not found" });
-    await prisma.comic.update({ where: { id: req.params.id }, data: { category: parsed.data.category } });
-    res.json({ ok: true });
+    // Dedupe + trim. The API replaces the full array — callers that
+    // want to preserve previous tags should send the merged list.
+    const seen = new Set<string>();
+    const next: string[] = [];
+    for (const raw of parsed.data.categories) {
+      const v = raw.trim();
+      if (!v || seen.has(v)) continue;
+      seen.add(v);
+      next.push(v);
+    }
+    await prisma.comic.update({
+      where: { id: req.params.id },
+      data: {
+        categories: { set: next },
+        // Keep the legacy primary in sync: prefer the existing primary
+        // if it's still in the new list, otherwise fall back to the
+        // first item (or null when the array is cleared).
+        category: next[0] ?? null,
+      },
+    });
+    res.json({ ok: true, categories: next });
   }),
 );
