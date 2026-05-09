@@ -624,12 +624,17 @@ export async function evaluateAchievements(ownerId = "default"): Promise<{ id: s
     }
     results.push({ id: def.id, unlocked });
   }
-  for (const unlock of unlocks) {
-    await prisma.achievement.upsert({
-      where: { ownerId_id: unlock },
-      update: {},
-      create: unlock,
-    });
+  if (unlocks.length > 0) {
+    // `createMany` with `skipDuplicates` is idempotent and atomic, so two
+    // concurrent evaluations (e.g. an optimistic favorite + a bulk
+    // categoryAdd firing within the same tick) can race on the unique
+    // (ownerId, id) constraint without poisoning the surrounding HTTP
+    // request. The previous per-row `upsert` snapshotted `existing`
+    // before issuing writes, so two callers could each see the
+    // achievement as missing, both attempt to insert, and the loser
+    // would throw P2002 — bubbling all the way up as a 500 and rolling
+    // back the user's optimistic mutation in the UI.
+    await prisma.achievement.createMany({ data: unlocks, skipDuplicates: true });
   }
   return results;
 }
