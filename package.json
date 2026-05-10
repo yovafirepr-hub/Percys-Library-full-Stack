@@ -30,7 +30,12 @@
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
     "stress": "node scripts/stress.mjs",
-    "stress:web": "node scripts/stress.mjs --duration=15 --connections=64"
+    "stress:web": "node scripts/stress.mjs --duration=15 --connections=64",
+    "stress:reader": "node scripts/stress-reader-500.mjs",
+    "stress:mutations": "node scripts/stress-mutations.mjs",
+    "stress:pages": "node scripts/stress-pages.mjs",
+    "stress:all": "node scripts/stress.mjs && node scripts/stress-pages.mjs && node scripts/stress-mutations.mjs && node scripts/stress-reader-500.mjs",
+    "make:stress-comic": "node scripts/make-stress-comic.mjs --pages=500"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5"

@@ -7,6 +7,15 @@ dotenv.config();
 
 const root = path.resolve(__dirname, "..");
 
+// Prefer DATABASE_URL_SUPABASE when set so the dev/test environment can
+// keep talking to the user's Supabase project even while the rest of the
+// stack is running locally. Falls back to DATABASE_URL (which the bundled
+// docker-compose Postgres satisfies) so nothing breaks when the secret
+// isn't provided.
+if (process.env.DATABASE_URL_SUPABASE && !process.env.DATABASE_URL_OVERRIDE_LOCAL) {
+  process.env.DATABASE_URL = process.env.DATABASE_URL_SUPABASE;
+}
+
 /**
  * All env vars consumed by the server, validated with Zod. Coercions are
  * intentional: `PORT`, `LOG_LEVEL`, the rate-limit knobs and the cache
