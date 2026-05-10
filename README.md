@@ -38,7 +38,37 @@ apps/
 
 Requiere Node.js >= 18.18 y una base de datos PostgreSQL.
 
-### Opción A — Postgres local con Docker (recomendado para desarrollo)
+### Opción A — Supabase como DB principal (recomendado para no perder estado)
+
+Supabase funciona igual de bien en local que en producción y mantiene los
+cómics, progreso y logros sincronizados aunque saltes entre máquinas.
+
+1. Copia la connection string de tu proyecto desde **Project Settings → Database
+   → Connection string** (modo `Session pooler` recomendado: puerto 5432, host
+   `aws-0-<region>.pooler.supabase.com`, usuario `postgres.<project-ref>`).
+2. Configura una de estas dos variables (la primera tiene preferencia):
+
+   ```bash
+   # Opción recomendada — sin tocar DATABASE_URL ni el .env compartido
+   export DATABASE_URL_SUPABASE="postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres"
+
+   # O bien escríbela directamente en apps/server/.env
+   DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres"
+   ```
+
+3. Instala dependencias y arranca:
+
+   ```bash
+   npm install
+   npm run setup                                   # prisma generate + db push
+   npm run dev                                     # backend + frontend
+   ```
+
+Si necesitas forzar un arranque sólo-local (sin tocar Supabase) deja
+`DATABASE_URL_SUPABASE` definida y exporta `DATABASE_URL_OVERRIDE_LOCAL=1`
+antes de `npm run dev`.
+
+### Opción B — Postgres local con Docker (offline / pruebas reproducibles)
 
 ```bash
 cp apps/server/.env.example apps/server/.env   # ya viene con la URL local
@@ -52,24 +82,6 @@ El `docker-compose.yml` incluido expone Postgres 16 con la URL
 `postgresql://postgres:postgres@localhost:5432/percys` (la misma que viene
 por defecto en `.env.example`). `npm run db:up` / `npm run db:down`
 lo controlan; `npm run db:logs` muestra los logs.
-
-### Opción B — Supabase
-
-1. Crea un proyecto en [Supabase](https://supabase.com) (capa gratuita basta).
-2. Copia la connection string de tipo URI desde **Project Settings → Database → Connection string** y úsala como `DATABASE_URL`:
-
-   ```bash
-   cp apps/server/.env.example apps/server/.env
-   # editar DATABASE_URL=postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
-   ```
-
-3. Instala dependencias y arranca:
-
-   ```bash
-   npm install
-   npm run setup
-   npm run dev
-   ```
 
 - Backend: <http://localhost:4000>
 - Frontend: <http://localhost:5173>
@@ -108,19 +120,36 @@ npm run db:up        # docker compose up -d postgres
 npm run db:down      # docker compose down
 npm run db:logs      # logs de Postgres
 npm run stress       # stress test (autocannon) contra :4000
+npm run stress:reader      # 500 páginas por todo el pipeline
+npm run stress:mutations   # bulk + setProgress concurrentes
+npm run stress:pages       # /covers /pages /thumbs
+npm run stress:all         # los cuatro encadenados
+npm run make:stress-comic  # genera apps/server/data/library/stress-500.cbz
 ```
 
 ### Stress testing
 
-El harness en `scripts/stress.mjs` corre escenarios secuenciales
-contra los endpoints más calientes y reporta rps/p50/p99. Útil para
-validar cambios que toquen middleware, queries Prisma o el pipeline
-de imágenes:
+Los harnesses bajo `scripts/` cubren las tres superficies más calientes:
+
+- `scripts/stress.mjs` — autocannon sobre `/api/library`, `/api/settings`,
+  `/api/library/summary`, etc. Reporta rps/p50/p99 y errores.
+- `scripts/stress-pages.mjs` — `/covers`, `/pages`, `/thumbs`
+  concurrentes; valida el pipeline de imágenes.
+- `scripts/stress-mutations.mjs` — escrituras concurrentes sobre
+  `/progress`, `/favorite`, `/categories` y `/bulk`. Detectó la race
+  de `ensureSettings` que ya está corregida.
+- `scripts/stress-reader-500.mjs` — fuerza la lectura de las **500
+  páginas** del fixture sintético tres veces (secuencial, aleatorio,
+  thumbs cada 3) y dispara 200 hits paralelos a `/cover` y
+  `/library/summary`. Pensado para el cómic generado por
+  `npm run make:stress-comic`.
 
 ```bash
 npm run stress -- --duration=10 --connections=64
-node scripts/stress-pages.mjs 8       # /covers /pages /thumbs
-node scripts/stress-mutations.mjs     # bulk + setProgress concurrentes
+npm run stress:pages
+npm run stress:mutations
+npm run make:stress-comic   # crea el fixture de 500 páginas
+npm run stress:reader -- --concurrency=24 --quality=high
 ```
 
 ## Arquitectura del Reader
