@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import multer from "multer";
+import { z } from "zod";
 import { prisma } from "../db";
 import { config } from "../config";
 import { scanLibrary, registerComicPath } from "../services/scanner";
@@ -12,6 +13,21 @@ import { getOwnerId } from "../lib/owner";
 import { isImageName } from "../lib/natural-sort";
 
 export const libraryRouter = Router();
+
+const FORMAT_VALUES = ["cbz", "cbr", "pdf", "folder"] as const;
+const STATUS_VALUES = ["all", "in-progress", "completed", "unread", "favorites"] as const;
+const SORT_VALUES = ["lastReadAt", "title", "addedAt", "updatedAt", "progress"] as const;
+
+const listQuerySchema = z.object({
+  q: z.string().trim().max(120).optional(),
+  format: z.enum(FORMAT_VALUES).optional(),
+  status: z.enum(STATUS_VALUES).optional(),
+  category: z.string().trim().max(80).optional(),
+  sort: z.enum(SORT_VALUES).default("updatedAt"),
+  order: z.enum(["asc", "desc"]).default("desc"),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+  offset: z.coerce.number().int().min(0).default(0),
+});
 
 const ALLOWED_EXT = new Set([".cbz", ".cbr", ".pdf", ".zip", ".rar"]);
 const ALLOWED_IMAGE_EXT = new Set([
@@ -74,46 +90,178 @@ const upload = multer({
   },
 });
 
+interface RawComic {
+  id: string;
+  title: string;
+  format: string;
+  pageCount: number;
+  currentPage: number;
+  completed: boolean;
+  isFavorite: boolean;
+  category: string | null;
+  categories: string[];
+  addedAt: Date;
+  updatedAt: Date;
+  lastReadAt: Date | null;
+  sizeBytes: bigint;
+  lastZoom: number | null;
+}
+
+const PAGES_PER_MINUTE = 2;
+
+function serializeComic(c: RawComic) {
+  return {
+    id: c.id,
+    title: c.title,
+    format: c.format,
+    pageCount: c.pageCount,
+    currentPage: c.currentPage,
+    completed: c.completed,
+    isFavorite: c.isFavorite,
+    category: c.category,
+    categories: c.categories ?? [],
+    addedAt: c.addedAt,
+    updatedAt: c.updatedAt,
+    lastReadAt: c.lastReadAt,
+    sizeBytes: Number(c.sizeBytes),
+    lastZoom: c.lastZoom,
+    readingTimeMinutes: Math.max(1, Math.ceil(c.pageCount / PAGES_PER_MINUTE)),
+  };
+}
+
+function buildListWhere(
+  ownerId: string,
+  parsed: z.infer<typeof listQuerySchema>,
+): import("@prisma/client").Prisma.ComicWhereInput {
+  const where: import("@prisma/client").Prisma.ComicWhereInput = { ownerId };
+  if (parsed.q && parsed.q.length > 0) {
+    where.title = { contains: parsed.q, mode: "insensitive" };
+  }
+  if (parsed.format) where.format = parsed.format;
+  if (parsed.category) {
+    // Match either the legacy primary slot OR the multi-tag array.
+    where.OR = [{ category: parsed.category }, { categories: { has: parsed.category } }];
+  }
+  if (parsed.status === "in-progress") {
+    where.completed = false;
+    where.currentPage = { gt: 0 };
+  } else if (parsed.status === "completed") {
+    where.completed = true;
+  } else if (parsed.status === "unread") {
+    where.completed = false;
+    where.currentPage = 0;
+  } else if (parsed.status === "favorites") {
+    where.isFavorite = true;
+  }
+  return where;
+}
+
+function buildListOrderBy(
+  parsed: z.infer<typeof listQuerySchema>,
+): import("@prisma/client").Prisma.ComicOrderByWithRelationInput[] {
+  const order = parsed.order;
+  switch (parsed.sort) {
+    case "title":
+      return [{ title: order }];
+    case "addedAt":
+      return [{ addedAt: order }];
+    case "updatedAt":
+      return [{ updatedAt: order }];
+    case "lastReadAt":
+      // NULLs go last regardless of direction so unread comics don't
+      // dominate the "recently read" view.
+      return [{ lastReadAt: { sort: order, nulls: "last" } }];
+    case "progress":
+      // Best-effort: order by currentPage as a proxy for absolute progress.
+      // (Prisma can't sort by computed expressions across columns yet.)
+      return [{ currentPage: order }, { updatedAt: "desc" }];
+  }
+}
+
 libraryRouter.get(
   "/",
   asyncHandler(async (req, res) => {
     const ownerId = getOwnerId(req);
-    const comics = await prisma.comic.findMany({ where: { ownerId }, orderBy: [{ updatedAt: "desc" }] });
-    const PAGES_PER_MINUTE = 2; // Average reading speed
-    res.json(
-      comics.map((c: {
-        id: string;
-        title: string;
-        format: string;
-        pageCount: number;
-        currentPage: number;
-        completed: boolean;
-        isFavorite: boolean;
-        category: string | null;
-        categories: string[];
-        addedAt: Date;
-        updatedAt: Date;
-        lastReadAt: Date | null;
-        sizeBytes: bigint;
-        lastZoom: number | null;
-      }) => ({
-        id: c.id,
-        title: c.title,
-        format: c.format,
-        pageCount: c.pageCount,
-        currentPage: c.currentPage,
-        completed: c.completed,
-        isFavorite: c.isFavorite,
-        category: c.category,
-        categories: c.categories ?? [],
-        addedAt: c.addedAt,
-        updatedAt: c.updatedAt,
-        lastReadAt: c.lastReadAt,
-        sizeBytes: Number(c.sizeBytes),
-        lastZoom: c.lastZoom,
-        readingTimeMinutes: Math.max(1, Math.ceil(c.pageCount / PAGES_PER_MINUTE)),
-      })),
-    );
+    const parsed = listQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+    const where = buildListWhere(ownerId, parsed.data);
+    const orderBy = buildListOrderBy(parsed.data);
+    const [total, comics] = await Promise.all([
+      prisma.comic.count({ where }),
+      prisma.comic.findMany({
+        where,
+        orderBy,
+        skip: parsed.data.offset,
+        take: parsed.data.limit,
+      }) as Promise<RawComic[]>,
+    ]);
+    res.setHeader("X-Total-Count", String(total));
+    res.json(comics.map(serializeComic));
+  }),
+);
+
+/**
+ * Lightweight summary used by stats / dashboards. Cheap aggregations only;
+ * never returns the full comic list (use `GET /api/library` with paging
+ * for that). Calls fan out to indexed COUNT queries plus a single
+ * SUM(sizeBytes) so even a 100k-comic library responds in a few ms.
+ */
+libraryRouter.get(
+  "/summary",
+  asyncHandler(async (req, res) => {
+    const ownerId = getOwnerId(req);
+    const [total, completed, favorites, inProgress, sizeAggRaw] = await Promise.all([
+      prisma.comic.count({ where: { ownerId } }),
+      prisma.comic.count({ where: { ownerId, completed: true } }),
+      prisma.comic.count({ where: { ownerId, isFavorite: true } }),
+      prisma.comic.count({
+        where: { ownerId, completed: false, currentPage: { gt: 0 } },
+      }),
+      prisma.comic.aggregate({
+        where: { ownerId },
+        _sum: { sizeBytes: true },
+      }),
+    ]);
+    const totalBytesRaw = sizeAggRaw._sum.sizeBytes ?? 0n;
+    res.json({
+      total,
+      completed,
+      inProgress,
+      unread: Math.max(0, total - completed - inProgress),
+      favorites,
+      totalBytes: Number(totalBytesRaw),
+    });
+  }),
+);
+
+/** Export the entire library as JSON (or NDJSON when ?format=ndjson). */
+libraryRouter.get(
+  "/export",
+  asyncHandler(async (req, res) => {
+    const ownerId = getOwnerId(req);
+    const fmt = String(req.query.format ?? "json").toLowerCase();
+    const comics = (await prisma.comic.findMany({
+      where: { ownerId },
+      orderBy: { addedAt: "asc" },
+    })) as RawComic[];
+    if (fmt === "ndjson") {
+      res.setHeader("Content-Type", "application/x-ndjson");
+      res.setHeader("Content-Disposition", "attachment; filename=\"library.ndjson\"");
+      for (const c of comics) {
+        res.write(JSON.stringify(serializeComic(c)) + "\n");
+      }
+      return res.end();
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", "attachment; filename=\"library.json\"");
+    res.json({
+      exportedAt: new Date().toISOString(),
+      ownerId,
+      count: comics.length,
+      comics: comics.map(serializeComic),
+    });
   }),
 );
 

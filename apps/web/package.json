@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --import tsx src/lib/selection.test.ts"
+    "test": "node --test --import tsx src/lib/selection.test.ts src/lib/themes.test.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
