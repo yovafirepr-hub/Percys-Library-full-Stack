@@ -275,6 +275,41 @@ comicsRouter.post(
   }),
 );
 
+// "Surprise me" / shuffle endpoint — picks a comic uniformly at random
+// from the requested scope. Use scope=in-progress to bias the selection
+// toward a comic the user is already reading; defaults to `all`.
+const randomScope = z.enum(["all", "unread", "in-progress", "favorites"]).default("all");
+
+comicsRouter.get(
+  "/random",
+  asyncHandler(async (req, res) => {
+    const ownerId = getOwnerId(req);
+    const scope = randomScope.parse(req.query.scope ?? "all");
+    const where: import("@prisma/client").Prisma.ComicWhereInput = { ownerId };
+    if (scope === "favorites") where.isFavorite = true;
+    else if (scope === "in-progress") {
+      where.completed = false;
+      where.currentPage = { gt: 0 };
+    } else if (scope === "unread") {
+      where.completed = false;
+      where.currentPage = 0;
+    }
+    const total = await prisma.comic.count({ where });
+    if (total === 0) return res.status(404).json({ error: "No comics in scope" });
+    const skip = Math.floor(Math.random() * total);
+    const [pick] = await prisma.comic.findMany({ where, skip, take: 1 });
+    if (!pick) return res.status(404).json({ error: "No comic found" });
+    res.json({
+      id: pick.id,
+      title: pick.title,
+      format: pick.format,
+      pageCount: pick.pageCount,
+      currentPage: pick.currentPage,
+      completed: pick.completed,
+    });
+  }),
+);
+
 comicsRouter.get(
   "/:id",
   asyncHandler(async (req, res) => {

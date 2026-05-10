@@ -49,8 +49,7 @@ supabase/.temp/
 
 # User-imported comics and derived caches. These belong to the running
 # user, not the repo, and contain test data we never want shipped.
-apps/server/data/_uploads/
-apps/server/data/library/_uploads/
+apps/server/data/
 apps/server/cache/
 
 # Test scratch files (test plans / reports / fixtures generated locally).

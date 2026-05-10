@@ -212,9 +212,47 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 import { getOwnerId } from "./owner";
 
+export interface LibraryQuery {
+  q?: string;
+  format?: ComicSummary["format"];
+  status?: "all" | "in-progress" | "completed" | "unread" | "favorites";
+  category?: string;
+  sort?: "lastReadAt" | "title" | "addedAt" | "updatedAt" | "progress";
+  order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}
+
+export interface LibrarySummary {
+  total: number;
+  completed: number;
+  inProgress: number;
+  unread: number;
+  favorites: number;
+  totalBytes: number;
+}
+
 export const api = {
-  library: () => jsonFetch<ComicSummary[]>("/api/library"),
+  /** Fetch the library list. With no args returns a sensible default
+   *  (newest-first, paginated to 200) so most callers don't need to
+   *  think about params. Pass a `LibraryQuery` for search / filter. */
+  library: (query: LibraryQuery = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null || value === "") continue;
+      search.set(key, String(value));
+    }
+    const qs = search.toString();
+    return jsonFetch<ComicSummary[]>(`/api/library${qs ? `?${qs}` : ""}`);
+  },
+  librarySummary: () => jsonFetch<LibrarySummary>("/api/library/summary"),
+  /** Returns the export URL — callers usually let the browser download it.
+   *  Format defaults to JSON; `ndjson` streams one comic per line. */
+  libraryExportUrl: (format: "json" | "ndjson" = "json") =>
+    `/api/library/export?format=${format}`,
   scan: () => jsonFetch<{ added: number; removed: number; total: number }>("/api/library/scan", { method: "POST" }),
+  randomComic: (scope: "all" | "unread" | "in-progress" | "favorites" = "all") =>
+    jsonFetch<NextComic>(`/api/comics/random?scope=${scope}`),
   // Upload uses multipart/form-data (not JSON) so we hit fetch directly
   // instead of going through jsonFetch which forces a JSON content-type.
   uploadComics: async (files: File[]) => {
